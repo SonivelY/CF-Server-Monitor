@@ -22,7 +22,7 @@ export async function handleAdminUI(request, env, sys) {
   if (results && results.length > 0) {
     for (const s of results) {
       const lastUpdated = new Date(s.last_updated).getTime();
-      const isOnline = (now - lastUpdated) < 30000;
+      const isOnline = (now - lastUpdated) < 300000;
       const status = isOnline 
         ? '<span style="color:var(--accent-green); font-weight:bold;">● ONLINE</span>' 
         : '<span style="color:var(--accent-red); font-weight:bold;">● OFFLINE</span>';
@@ -44,7 +44,7 @@ export async function handleAdminUI(request, env, sys) {
               <a href="/?id=${s.id}" style="color:var(--text-primary); font-weight:bold; text-decoration:none; hover:text:var(--accent-green);">${s.name}</a>
             </div>
           </td>
-          <td><span class="group-tag">${s.server_group || '默认分组'}</span></td>
+          <td><span class="group-tag">${s.server_group || 'Default'}</span></td>
           <td><span class="price-tag">${s.price || ''}</span></td>
           <td><span class="date-text">${s.expire_date || '-'}</span></td>
           <td><span class="spec-text">${s.bandwidth || '-'}</span></td>
@@ -868,7 +868,7 @@ export async function handleAdminUI(request, env, sys) {
         <div class="toolbar">
           <input type="text" id="newName" class="toolbar-input" placeholder="> Enter server name...">
           <select id="newGroup" class="toolbar-select">
-            <option value="默认分组">默认分组</option>
+            <option value="Default">Default</option>
           </select>
           <button onclick="addServer()" class="btn btn-primary">
             + ADD SERVER
@@ -1258,7 +1258,7 @@ export async function handleAdminUI(request, env, sys) {
     // 编辑弹窗
     function openEditModal(id, group, price, expire, bw, traffic) {
       document.getElementById('editId').value = id;
-      document.getElementById('editGroup').value = group || '默认分组';
+      document.getElementById('editGroup').value = group || 'Default';
       document.getElementById('editPrice').value = price || '免费';
       document.getElementById('editExpire').value = expire || '';
       document.getElementById('editBandwidth').value = bw || '';

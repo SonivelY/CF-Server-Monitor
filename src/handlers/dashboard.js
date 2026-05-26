@@ -77,7 +77,7 @@ export async function handleDashboard(request, env, sys) {
   }
 
   // 生成过滤器标签
-  let filterTagsHtml = `<span class="filter-tag active" data-filter="all">[全部] ${results.length}</span>`;
+  let filterTagsHtml = `<span class="filter-tag active" data-filter="all">[All] ${results.length}</span>`;
   for (const [code, count] of Object.entries(countryStats).sort()) {
     filterTagsHtml += `<span class="filter-tag" data-filter="${code.toLowerCase()}">
       <img src="https://flagcdn.com/16x12/${code.toLowerCase()}.png" alt="${code}"> ${code} [${count}]
