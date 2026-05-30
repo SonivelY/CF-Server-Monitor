@@ -1,6 +1,7 @@
 import { initDatabase, cleanupOldData, getMetricsHistory, getAggregatedHistory } from './database/schema.js';
 import { handleAdminAPI } from './handlers/admin.js';
 import { handleAdminUI } from './handlers/admin-ui.js';
+import { serveFrontend } from './handlers/frontend.js';
 import { handleUpdate } from './handlers/update.js';
 import { handleDashboard, handleServerDetail, handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { loadSettings } from './utils/settings.js';
@@ -83,13 +84,16 @@ export default {
 
     const routes = [
       { method: 'GET', path: '/clear', handler: handleManualCleanup },
+      { method: 'GET', path: '/', handler: async () => serveFrontend(request, env) },
+      { method: 'GET', path: '/dashboard', handler: async () => serveFrontend(request, env) },
+      { method: 'GET', path: '/dashboard.html', handler: async () => serveFrontend(request, env) },
+      { method: 'GET', path: '/server', handler: async () => serveFrontend(request, env) },
+      { method: 'GET', path: '/server.html', handler: async () => serveFrontend(request, env) },
+      { method: 'GET', path: '/admin', handler: async () => serveFrontend(request, env) },
+      { method: 'GET', path: '/admin.html', handler: async () => serveFrontend(request, env) },
       { method: 'POST', path: '/admin/api', handler: async () => {
         const sys = await loadSettings(env.DB);
         return handleAdminAPI(request, env, sys);
-      }},
-      { method: 'GET', path: '/admin', handler: async () => {
-        const sys = await loadSettings(env.DB);
-        return handleAdminUI(request, env, sys);
       }},
       { method: 'POST', path: '/update', handler: () => handleUpdate(request, env, ctx) },
       { method: 'GET', path: '/api/server', handler: async () => {

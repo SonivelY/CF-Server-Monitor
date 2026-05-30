@@ -17,8 +17,31 @@ export async function handleAdminAPI(request, env, sys) {
 
   try {
     const data = await request.json();
-    
-    if (data.action === 'save_settings') {
+
+    if (data.action === 'get_settings') {
+      return new Response(JSON.stringify({
+        success: true,
+        settings: sys
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    else if (data.action === 'list') {
+      const { results: servers } = await env.DB.prepare(
+        'SELECT id, name, last_updated, server_group, price, expire_date, bandwidth, traffic_limit, country, is_hidden, sort_order FROM servers ORDER BY sort_order ASC'
+      ).all();
+
+      const latestMetricsMap = await getLatestMetricsForAllServers(env.DB);
+
+      return new Response(JSON.stringify({
+        success: true,
+        servers: servers,
+        latestMetricsMap: Object.fromEntries(latestMetricsMap)
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    else if (data.action === 'save_settings') {
       for (const [k, v] of Object.entries(data.settings)) {
         await env.DB.prepare(
           'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'

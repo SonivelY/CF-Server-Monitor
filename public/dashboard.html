@@ -1,178 +1,13 @@
-import { checkAuth, authResponse } from '../middleware/auth.js';
-import { formatBytes, getPingColor } from '../utils/format.js';
-import { getThemeStyles, getFooterHtml } from '../themes/styles.js';
-import { handleServerDetail } from './server-detail.js';
-import { getLatestMetrics, getLatestMetricsForAllServers } from '../database/schema.js';
-
-export async function handleServerAPI(request, env, sys) {
-  // 公开页面始终可以访问，隐藏的服务器不展示即可
-  const isLoggedIn = checkAuth(request, env);
-  
-  const url = new URL(request.url);
-  const id = url.searchParams.get('id');
-  
-  if (!id) return new Response('Missing ID', { status: 400 });
-  let query = 'SELECT * FROM servers WHERE id = ?';
-  if (!isLoggedIn) {
-    query += " AND is_hidden != '1'";
-  }
-  
-  const server = await env.DB.prepare(query).bind(id).first();
-  if (!server) return new Response('Not Found', { status: 404 });
-  
-  const latestMetrics = await getLatestMetrics(env.DB, id);
-  
-  if (latestMetrics) {
-    server.cpu = latestMetrics.cpu || 0;
-    server.ram = latestMetrics.ram || 0;
-    server.disk = latestMetrics.disk || 0;
-    server.load_avg = latestMetrics.load_avg || '0';
-    server.net_in_speed = latestMetrics.net_in_speed || 0;
-    server.net_out_speed = latestMetrics.net_out_speed || 0;
-    server.net_rx = latestMetrics.net_rx || 0;
-    server.net_tx = latestMetrics.net_tx || 0;
-    server.processes = latestMetrics.processes || 0;
-    server.tcp_conn = latestMetrics.tcp_conn || 0;
-    server.udp_conn = latestMetrics.udp_conn || 0;
-    server.ping_ct = latestMetrics.ping_ct || 0;
-    server.ping_cu = latestMetrics.ping_cu || 0;
-    server.ping_cm = latestMetrics.ping_cm || 0;
-    server.ping_bd = latestMetrics.ping_bd || 0;
-    server.ram_total = latestMetrics.ram_total || 0;
-    server.ram_used = latestMetrics.ram_used || 0;
-    server.swap_total = latestMetrics.swap_total || 0;
-    server.swap_used = latestMetrics.swap_used || 0;
-    server.disk_total = latestMetrics.disk_total || 0;
-    server.disk_used = latestMetrics.disk_used || 0;
-    server.last_updated = latestMetrics.timestamp || 0;
-  }
-  
-  return new Response(JSON.stringify(server), { 
-    headers: { 'Content-Type': 'application/json' } 
-  });
-}
-
-export async function handleServersAPI(request, env, sys) {
-  // 公开页面始终可以访问，隐藏的服务器不展示即可
-  const isLoggedIn = checkAuth(request, env);
-  
-  let query = 'SELECT * FROM servers';
-  if (!isLoggedIn) {
-    query += " WHERE is_hidden != '1'";
-  }
-  query += ' ORDER BY sort_order ASC';
-  
-  const { results } = await env.DB.prepare(query).all();
-  
-  const latestMetricsMap = await getLatestMetricsForAllServers(env.DB);
-  
-  const now = Date.now();
-  let globalOnline = 0;
-  let globalSpeedIn = 0, globalSpeedOut = 0, globalNetTx = 0, globalNetRx = 0;
-  const countryStats = {};
-  
-  for (const server of results) {
-    const latestMetrics = latestMetricsMap.get(server.id);
-    
-    let lastUpdated = 0;
-    let isOnline = false;
-    
-    if (latestMetrics) {
-      lastUpdated = latestMetrics.timestamp;
-      isOnline = (now - lastUpdated) < 300000;
-      
-      server.cpu = latestMetrics.cpu || 0;
-      server.ram = latestMetrics.ram || 0;
-      server.disk = latestMetrics.disk || 0;
-      server.load_avg = latestMetrics.load_avg || '0';
-      server.net_in_speed = latestMetrics.net_in_speed || 0;
-      server.net_out_speed = latestMetrics.net_out_speed || 0;
-      server.net_rx = latestMetrics.net_rx || 0;
-      server.net_tx = latestMetrics.net_tx || 0;
-      server.processes = latestMetrics.processes || 0;
-      server.tcp_conn = latestMetrics.tcp_conn || 0;
-      server.udp_conn = latestMetrics.udp_conn || 0;
-      server.ping_ct = latestMetrics.ping_ct || 0;
-      server.ping_cu = latestMetrics.ping_cu || 0;
-      server.ping_cm = latestMetrics.ping_cm || 0;
-      server.ping_bd = latestMetrics.ping_bd || 0;
-      server.ram_total = latestMetrics.ram_total || 0;
-      server.ram_used = latestMetrics.ram_used || 0;
-      server.swap_total = latestMetrics.swap_total || 0;
-      server.swap_used = latestMetrics.swap_used || 0;
-      server.disk_total = latestMetrics.disk_total || 0;
-      server.disk_used = latestMetrics.disk_used || 0;
-      server.last_updated = lastUpdated;
-    } else {
-      lastUpdated = new Date(server.last_updated).getTime();
-      isOnline = (now - lastUpdated) < 300000;
-    }
-    
-    if (isOnline) {
-      globalOnline++;
-      globalSpeedIn += parseFloat(server.net_in_speed) || 0;
-      globalSpeedOut += parseFloat(server.net_out_speed) || 0;
-    }
-    
-    globalNetRx += parseFloat(server.net_rx || 0);
-    globalNetTx += parseFloat(server.net_tx || 0);
-    
-    let cCode = (server.country || 'xx').toUpperCase();
-    if (cCode === 'TW') cCode = 'CN';
-    if (cCode !== 'XX') {
-      countryStats[cCode] = (countryStats[cCode] || 0) + 1;
-    }
-  }
-  
-  const globalOffline = results.length - globalOnline;
-
-  const data = {
-    servers: results,
-    stats: {
-      total: results.length,
-      online: globalOnline,
-      offline: globalOffline,
-      globalSpeedIn,
-      globalSpeedOut,
-      globalNetTx,
-      globalNetRx
-    },
-    countryStats,
-    latestMetricsMap: Object.fromEntries(latestMetricsMap),
-    sysConfig: {
-      show_price: sys.show_price === 'true',
-      show_expire: sys.show_expire === 'true',
-      show_bw: sys.show_bw === 'true',
-      show_tf: sys.show_tf === 'true',
-      site_title: sys.site_title || 'Server Monitor',
-      admin_title: sys.admin_title || 'Admin'
-    }
-  };
-
-  return new Response(JSON.stringify(data), {
-    headers: { 'Content-Type': 'application/json' }
-  });
-}
-
-export async function handleDashboard(request, env, sys) {
-  if (sys.is_public !== 'true' && !checkAuth(request, env)) {
-    return authResponse(sys.site_title);
-  }
-
-  const themeStyles = getThemeStyles(sys);
-  
-  const html = `<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${sys.site_title}</title>
+  <title>Server Monitor</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
-  <script id="map-data" type="application/json">{}</script>
-  ${sys.custom_head || ''}
   <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-    
+
     :root {
       --bg-primary: #0a0e14;
       --bg-secondary: #12171f;
@@ -192,10 +27,10 @@ export async function handleDashboard(request, env, sys) {
       --accent-cyan: #39d2c0;
       --terminal-font: 'JetBrains Mono', 'Courier New', monospace;
     }
-    
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    
-    body { 
+
+    body {
       font-family: var(--terminal-font);
       background: var(--bg-primary);
       color: var(--text-primary);
@@ -204,7 +39,7 @@ export async function handleDashboard(request, env, sys) {
       position: relative;
       font-size: 13px;
     }
-    
+
     body::before {
       content: '';
       position: fixed;
@@ -222,10 +57,9 @@ export async function handleDashboard(request, env, sys) {
       pointer-events: none;
       z-index: 9999;
     }
-    
+
     .container { max-width: 1500px; margin: 0 auto; padding: 16px; position: relative; }
-    
-    /* 终端顶部栏 */
+
     .terminal-header {
       display: flex;
       align-items: center;
@@ -238,29 +72,14 @@ export async function handleDashboard(request, env, sys) {
       font-size: 12px;
       color: var(--text-secondary);
     }
-    
-    .terminal-dots {
-      display: flex;
-      gap: 8px;
-    }
-    
-    .terminal-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-    }
-    
+
+    .terminal-dots { display: flex; gap: 8px; }
+    .terminal-dot { width: 10px; height: 10px; border-radius: 50%; }
     .terminal-dot.red { background: #ff5f56; }
     .terminal-dot.yellow { background: #ffbd2e; }
     .terminal-dot.green { background: #27c93f; }
-    
-    .terminal-title {
-      color: var(--text-primary);
-      font-weight: 600;
-      font-size: 12px;
-    }
-    
-    /* 导航区域 */
+    .terminal-title { color: var(--text-primary); font-weight: 600; font-size: 12px; }
+
     .nav-area {
       background: var(--bg-secondary);
       border: 1px solid var(--border-color);
@@ -268,7 +87,7 @@ export async function handleDashboard(request, env, sys) {
       padding: 16px;
       margin-bottom: 20px;
     }
-    
+
     .header-row {
       display: flex;
       align-items: center;
@@ -277,21 +96,16 @@ export async function handleDashboard(request, env, sys) {
       flex-wrap: wrap;
       gap: 12px;
     }
-    
+
     .site-title {
       font-size: 16px;
       font-weight: 700;
       color: var(--accent-green);
       text-shadow: 0 0 10px rgba(0, 212, 170, 0.3);
     }
-    
-    .controls-group {
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    
+
+    .controls-group { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+
     .view-toggle {
       display: flex;
       gap: 2px;
@@ -300,7 +114,7 @@ export async function handleDashboard(request, env, sys) {
       border-radius: 4px;
       padding: 3px;
     }
-    
+
     .toggle-btn {
       display: flex;
       align-items: center;
@@ -318,17 +132,10 @@ export async function handleDashboard(request, env, sys) {
       letter-spacing: 0.5px;
       transition: all 0.2s;
     }
-    
-    .toggle-btn:hover {
-      background: var(--bg-hover);
-      color: var(--text-primary);
-    }
-    
-    .toggle-btn.active {
-      background: var(--accent-green);
-      color: #000;
-    }
-    
+
+    .toggle-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .toggle-btn.active { background: var(--accent-green); color: #000; }
+
     .admin-link {
       padding: 6px 14px;
       background: var(--bg-card);
@@ -342,20 +149,11 @@ export async function handleDashboard(request, env, sys) {
       letter-spacing: 0.5px;
       transition: all 0.2s;
     }
-    
-    .admin-link:hover {
-      background: var(--bg-hover);
-      border-color: var(--border-active);
-    }
-    
-    /* 过滤器栏 */
-    .filter-bar {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 16px;
-    }
-    
+
+    .admin-link:hover { background: var(--bg-hover); border-color: var(--border-active); }
+
+    .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+
     .filter-tag {
       display: inline-flex;
       align-items: center;
@@ -371,24 +169,11 @@ export async function handleDashboard(request, env, sys) {
       transition: all 0.2s;
       font-family: var(--terminal-font);
     }
-    
-    .filter-tag:hover {
-      border-color: var(--border-active);
-      color: var(--text-primary);
-    }
-    
-    .filter-tag.active {
-      background: var(--accent-green);
-      color: #000;
-      border-color: var(--accent-green);
-      font-weight: 600;
-    }
-    
-    .filter-tag img {
-      border-radius: 1px;
-    }
-    
-    /* 全局统计 */
+
+    .filter-tag:hover { border-color: var(--border-active); color: var(--text-primary); }
+    .filter-tag.active { background: var(--accent-green); color: #000; border-color: var(--accent-green); font-weight: 600; }
+    .filter-tag img { border-radius: 1px; }
+
     .global-stats {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -399,48 +184,17 @@ export async function handleDashboard(request, env, sys) {
       overflow: hidden;
       margin-bottom: 20px;
     }
-    
-    .stat-item {
-      background: var(--bg-card);
-      padding: 14px 16px;
-      text-align: center;
-    }
-    
-    .stat-label {
-      font-size: 10px;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-bottom: 6px;
-    }
-    
-    .stat-main-value {
-      font-size: 20px;
-      font-weight: 700;
-      color: var(--accent-cyan);
-      text-shadow: 0 0 8px rgba(57, 210, 192, 0.3);
-    }
-    
-    .stat-sub-info {
-      font-size: 11px;
-      color: var(--text-secondary);
-      margin-top: 4px;
-    }
-    
-    /* 视图面板 */
-    .view-panel {
-      display: none;
-    }
-    
-    .view-panel.active {
-      display: block;
-    }
-    
-    /* 分组标题 */
-    .group-section {
-      margin-bottom: 24px;
-    }
-    
+
+    .stat-item { background: var(--bg-card); padding: 14px 16px; text-align: center; }
+    .stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .stat-main-value { font-size: 20px; font-weight: 700; color: var(--accent-cyan); text-shadow: 0 0 8px rgba(57, 210, 192, 0.3); }
+    .stat-sub-info { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+
+    .view-panel { display: none; }
+    .view-panel.active { display: block; }
+
+    .group-section { margin-bottom: 24px; }
+
     .group-header {
       font-size: 13px;
       font-weight: 600;
@@ -451,25 +205,12 @@ export async function handleDashboard(request, env, sys) {
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
-    
-    .prompt-sign {
-      color: var(--text-muted);
-    }
-    
-    .group-count {
-      color: var(--text-muted);
-      font-weight: 400;
-      font-size: 11px;
-    }
-    
-    /* 服务器卡片网格 */
-    .servers-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-      gap: 12px;
-    }
-    
-    /* 服务器卡片 */
+
+    .prompt-sign { color: var(--text-muted); }
+    .group-count { color: var(--text-muted); font-weight: 400; font-size: 11px; }
+
+    .servers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; }
+
     .server-card {
       background: var(--bg-secondary);
       border: 1px solid var(--border-color);
@@ -480,128 +221,32 @@ export async function handleDashboard(request, env, sys) {
       transition: all 0.2s;
       display: block;
     }
-    
-    .server-card:hover {
-      border-color: var(--accent-cyan);
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-      transform: translateY(-2px);
-    }
-    
-    .server-card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 12px;
-    }
-    
-    .server-identity {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    
-    .status-indicator {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    
-    .server-name {
-      font-weight: 600;
-      font-size: 13px;
-      color: var(--text-primary);
-    }
-    
-    .status-label {
-      font-size: 10px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border: 1px solid;
-      border-radius: 3px;
-      letter-spacing: 1px;
-    }
-    
-    .server-meta {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 12px;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-    
-    .card-meta {
-      display: flex;
-      gap: 12px;
-    }
-    
-    .card-badges {
-      display: flex;
-      gap: 4px;
-      flex-wrap: wrap;
-    }
-    
-    .badge {
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-size: 9px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    
+
+    .server-card:hover { border-color: var(--accent-cyan); box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3); transform: translateY(-2px); }
+
+    .server-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .server-identity { display: flex; align-items: center; gap: 8px; }
+    .status-indicator { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .server-name { font-weight: 600; font-size: 13px; color: var(--text-primary); }
+    .status-label { font-size: 10px; font-weight: 700; padding: 2px 8px; border: 1px solid; border-radius: 3px; letter-spacing: 1px; }
+    .server-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 11px; color: var(--text-muted); }
+    .card-meta { display: flex; gap: 12px; }
+    .card-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+    .badge { padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
     .badge-bw { background: var(--accent-blue); color: #000; }
     .badge-tf { background: var(--accent-green); color: #000; }
     .badge-v4 { background: var(--accent-purple); color: #000; }
     .badge-v6 { background: var(--accent-pink); color: #000; }
-    
-    /* 统计条 */
-    .server-stats {
-      margin-bottom: 12px;
-    }
-    
-    .stat-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
-    }
-    
-    .stat-key {
-      font-size: 10px;
-      color: var(--text-muted);
-      width: 35px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    
-    .stat-bar-container {
-      flex: 1;
-      height: 4px;
-      background: var(--border-color);
-      border-radius: 2px;
-      overflow: hidden;
-    }
-    
-    .stat-bar-fill {
-      height: 100%;
-      border-radius: 2px;
-      transition: width 0.3s ease;
-    }
-    
-    .stat-value {
-      font-size: 11px;
-      color: var(--text-secondary);
-      min-width: 40px;
-      text-align: right;
-      font-weight: 600;
-    }
-    
+
+    .server-stats { margin-bottom: 12px; }
+    .stat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .stat-key { font-size: 10px; color: var(--text-muted); width: 35px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-bar-container { flex: 1; height: 4px; background: var(--border-color); border-radius: 2px; overflow: hidden; }
+    .stat-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
+    .stat-value { font-size: 11px; color: var(--text-secondary); min-width: 40px; text-align: right; font-weight: 600; }
     .net-down { color: var(--accent-green); font-size: 10px; }
     .net-up { color: var(--accent-blue); font-size: 10px; }
-    
-    /* Ping面板 */
+
     .ping-panel {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -611,169 +256,64 @@ export async function handleDashboard(request, env, sys) {
       border-radius: 4px;
       border: 1px solid var(--border-color);
     }
-    
-    .ping-item {
-      text-align: center;
-    }
-    
-    .ping-label {
-      font-size: 9px;
-      color: var(--text-muted);
-      display: block;
-      margin-bottom: 2px;
-    }
-    
-    .ping-value {
-      font-size: 10px;
-      font-weight: 700;
-    }
-    
-    /* 表格视图 */
-    .table-container {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-    
-    .terminal-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-    
-    .terminal-table th {
-      background: var(--bg-card);
-      padding: 10px 12px;
-      text-align: left;
-      color: var(--text-muted);
-      font-weight: 600;
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      border-bottom: 1px solid var(--border-color);
-    }
-    
-    .terminal-table td {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border-color);
-      vertical-align: middle;
-    }
-    
-    .terminal-table tr:hover {
-      background: var(--bg-hover);
-    }
-    
-    .table-stat {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    
-    .os-label {
-      font-size: 11px;
-      color: var(--text-secondary);
-    }
-    
-    .update-time {
-      color: var(--text-muted);
-      font-size: 11px;
-    }
-    
-    /* 地图视图 */
-    .map-wrapper {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      border-radius: 4px;
-      padding: 4px;
-    }
-    
-    #map-container {
-      width: 100%;
-      height: 500px;
-      border-radius: 4px;
-      background: #1a1a2e;
-    }
-    
-    /* 空状态 */
-    .empty-state {
-      text-align: center;
-      color: var(--text-muted);
-      padding: 40px;
-      font-size: 13px;
-    }
-    
-    .loading-state {
-      text-align: center;
-      color: var(--text-muted);
-      padding: 40px;
-      font-size: 13px;
-    }
-    
-    ::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
-    }
-    
-    ::-webkit-scrollbar-track {
-      background: var(--bg-primary);
-    }
-    
-    ::-webkit-scrollbar-thumb {
-      background: var(--border-color);
-      border-radius: 4px;
-    }
-    
-    ::-webkit-scrollbar-thumb:hover {
-      background: var(--border-active);
-    }
-    
-    /* 响应式 */
+
+    .ping-item { text-align: center; }
+    .ping-label { font-size: 9px; color: var(--text-muted); display: block; margin-bottom: 2px; }
+    .ping-value { font-size: 10px; font-weight: 700; }
+
+    .table-container { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden; }
+    .terminal-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .terminal-table th { background: var(--bg-card); padding: 10px 12px; text-align: left; color: var(--text-muted); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border-color); }
+    .terminal-table td { padding: 10px 12px; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
+    .terminal-table tr:hover { background: var(--bg-hover); }
+    .table-stat { display: flex; align-items: center; gap: 8px; }
+    .os-label { font-size: 11px; color: var(--text-secondary); }
+    .update-time { color: var(--text-muted); font-size: 11px; }
+
+    .map-wrapper { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; padding: 4px; }
+    #map-container { width: 100%; height: 500px; border-radius: 4px; background: #1a1a2e; }
+
+    .empty-state { text-align: center; color: var(--text-muted); padding: 40px; font-size: 13px; }
+    .loading-state { text-align: center; color: var(--text-muted); padding: 40px; font-size: 13px; }
+
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-primary); }
+    ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-active); }
+
     @media (max-width: 768px) {
       .container { padding: 8px; }
       .servers-grid { grid-template-columns: 1fr; }
       .global-stats { grid-template-columns: 1fr; }
       .ping-panel { grid-template-columns: repeat(2, 1fr); }
     }
-    
-    ${themeStyles}
   </style>
 </head>
-<body class="${sys.theme || 'theme1'}">
+<body>
   <div class="container">
-    <!-- 终端顶部模拟 -->
     <div class="terminal-header">
       <div class="terminal-dots">
         <span class="terminal-dot red"></span>
         <span class="terminal-dot yellow"></span>
         <span class="terminal-dot green"></span>
       </div>
-      <div class="terminal-title">
-        ${sys.site_title}
-      </div>
+      <div class="terminal-title" id="site-title">Server Monitor</div>
       <div></div>
     </div>
-    
-    <!-- 导航区域 -->
+
     <div class="nav-area">
       <div class="header-row">
-        <div class="site-title">$ ./${sys.site_title}</div>
+        <div class="site-title" id="page-title">$ ./Server Monitor</div>
         <div class="controls-group">
           <div class="view-toggle">
-            <button class="toggle-btn active" id="btn-card" onclick="switchView('card')">
-              ▣ CARDS
-            </button>
-            <button class="toggle-btn" id="btn-table" onclick="switchView('table')">
-              ≡ TABLE
-            </button>
-            <button class="toggle-btn" id="btn-map" onclick="switchView('map')">
-              ◉ MAP
-            </button>
+            <button class="toggle-btn active" id="btn-card" onclick="switchView('card')">▣ CARDS</button>
+            <button class="toggle-btn" id="btn-table" onclick="switchView('table')">≡ TABLE</button>
+            <button class="toggle-btn" id="btn-map" onclick="switchView('map')">◉ MAP</button>
           </div>
-          <a href="/admin" class="admin-link">⚙ ${sys.admin_title}</a>
+          <a href="/admin" class="admin-link" id="admin-link">⚙ Admin</a>
         </div>
       </div>
-      
+
       <div class="filter-bar" id="ajax-filters">
         <span class="filter-tag active" data-filter="all">[All] 0</span>
       </div>
@@ -784,7 +324,7 @@ export async function handleDashboard(request, env, sys) {
         <div class="stat-label">Total Servers</div>
         <div class="stat-main-value">-</div>
         <div class="stat-sub-info">
-          <span style="color:var(--accent-green);">ON:0</span> | 
+          <span style="color:var(--accent-green);">ON:0</span> |
           <span style="color:var(--accent-red);">OFF:0</span>
         </div>
       </div>
@@ -795,7 +335,7 @@ export async function handleDashboard(request, env, sys) {
       <div class="stat-item">
         <div class="stat-label">Real-time Speed</div>
         <div class="stat-main-value" style="font-size:16px;">
-          <span style="color:var(--accent-green);">↓ -/s</span> | 
+          <span style="color:var(--accent-green);">↓ -/s</span> |
           <span style="color:var(--accent-blue);">↑ -/s</span>
         </div>
       </div>
@@ -833,28 +373,41 @@ export async function handleDashboard(request, env, sys) {
       </div>
     </div>
 
-    <!-- 地图视图 -->
     <div id="view-map" class="view-panel">
       <div class="map-wrapper">
         <div id="map-container"></div>
       </div>
     </div>
-    
-    ${getFooterHtml()}
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script id="sys-config" type="application/json">${JSON.stringify({
-    show_price: sys.show_price === 'true',
-    show_expire: sys.show_expire === 'true',
-    show_bw: sys.show_bw === 'true',
-    show_tf: sys.show_tf === 'true'
-  })}</script>
   <script>
     let mapInitialized = false;
     let currentFilter = 'all';
-    const sysConfig = JSON.parse(document.getElementById('sys-config').textContent);
-    
+    let sysConfig = {};
+    const API_BASE = window.location.origin;
+
+    function getAdminCredentials() {
+      const creds = localStorage.getItem('admin_credentials');
+      if (!creds) return null;
+      try {
+        return JSON.parse(creds);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function isAdminLoggedIn() {
+      return !!localStorage.getItem('admin_credentials');
+    }
+
+    function getAuthHeader() {
+      const creds = getAdminCredentials();
+      if (!creds || !creds.username || !creds.password) return {};
+      const encoded = btoa(creds.username + ':' + creds.password);
+      return { 'Authorization': 'Basic ' + encoded };
+    }
+
     function formatBytes(bytes) {
       bytes = parseFloat(bytes) || 0;
       if (bytes === 0) return '0 B';
@@ -863,7 +416,7 @@ export async function handleDashboard(request, env, sys) {
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
-    
+
     function getPingColor(ping) {
       ping = parseInt(ping) || 0;
       if (ping === 0) return 'var(--accent-red)';
@@ -871,7 +424,7 @@ export async function handleDashboard(request, env, sys) {
       if (ping < 200) return 'var(--accent-yellow)';
       return 'var(--accent-red)';
     }
-    
+
     function renderFilters(countryStats, totalServers) {
       let html = '<span class="filter-tag active" data-filter="all">[All] ' + totalServers + '</span>';
       const sorted = Object.entries(countryStats).sort();
@@ -883,7 +436,7 @@ export async function handleDashboard(request, env, sys) {
       }
       return html;
     }
-    
+
     function renderCards(servers, now) {
       const groups = {};
       const groupOrder = [];
@@ -895,11 +448,11 @@ export async function handleDashboard(request, env, sys) {
         }
         groups[grpName].push(server);
       }
-      
+
       if (groupOrder.length === 0) {
         return '<div class="empty-state">[!] 暂无服务器，请在 <a href="/admin" style="color: var(--accent-cyan);">后台管理</a> 中添加</div>';
       }
-      
+
       let html = '';
       for (const grpName of groupOrder) {
         const grpServers = groups[grpName];
@@ -908,7 +461,7 @@ export async function handleDashboard(request, env, sys) {
         html += '<span class="prompt-sign">#</span> ' + grpName + ' <span class="group-count">[' + grpServers.length + ']</span>';
         html += '</div>';
         html += '<div class="servers-grid">';
-        
+
         for (const server of grpServers) {
           const lastUpdated = new Date(server.last_updated).getTime();
           const isOnline = (now - lastUpdated) < 300000;
@@ -922,10 +475,10 @@ export async function handleDashboard(request, env, sys) {
           const totalRx = formatBytes(server.net_rx);
           const totalTx = formatBytes(server.net_tx);
           const cCode = (server.country || 'xx').toLowerCase();
-          const flagHtml = cCode !== 'xx' 
-            ? '<img src="https://flagcdn.com/24x18/' + cCode + '.png" alt="' + cCode + '" style="vertical-align: middle; margin-right: 5px; border-radius: 2px; filter: brightness(0.9);">' 
+          const flagHtml = cCode !== 'xx'
+            ? '<img src="https://flagcdn.com/24x18/' + cCode + '.png" alt="' + cCode + '" style="vertical-align: middle; margin-right: 5px; border-radius: 2px; filter: brightness(0.9);">'
             : '🏳️';
-          
+
           let metaHtml = '';
           if (sysConfig.show_price && server.price) {
             metaHtml += '<div class="card-meta">💰 ' + server.price + '</div>';
@@ -934,29 +487,29 @@ export async function handleDashboard(request, env, sys) {
             const expTime = new Date(server.expire_date).getTime();
             if (!isNaN(expTime)) {
               const diff = expTime - now;
-              const expireText = diff > 0 
-                ? Math.ceil(diff / (1000 * 3600 * 24)) + 'd' 
+              const expireText = diff > 0
+                ? Math.ceil(diff / (1000 * 3600 * 24)) + 'd'
                 : '<span style="color:var(--accent-red);">EXPIRED</span>';
               metaHtml += '<div class="card-meta">📅 ' + expireText + '</div>';
             }
           }
-          
+
           let badgesHtml = '';
-          if (sysConfig.show_bw && server.bandwidth) 
+          if (sysConfig.show_bw && server.bandwidth)
             badgesHtml += '<span class="badge badge-bw">' + server.bandwidth + '</span>';
-          if (sysConfig.show_tf && server.traffic_limit) 
+          if (sysConfig.show_tf && server.traffic_limit)
             badgesHtml += '<span class="badge badge-tf">' + server.traffic_limit + '</span>';
           if (server.ip_v4 === '1') badgesHtml += '<span class="badge badge-v4">IPv4</span>';
           if (server.ip_v6 === '1') badgesHtml += '<span class="badge badge-v6">IPv6</span>';
-          
+
           const pingHtml = '<div class="ping-panel">' +
             '<div class="ping-item"><span class="ping-label">CT</span><span class="ping-value" style="color:' + getPingColor(server.ping_ct) + '">' + (server.ping_ct === '0' ? 'TIMEOUT' : server.ping_ct + 'ms') + '</span></div>' +
             '<div class="ping-item"><span class="ping-label">CU</span><span class="ping-value" style="color:' + getPingColor(server.ping_cu) + '">' + (server.ping_cu === '0' ? 'TIMEOUT' : server.ping_cu + 'ms') + '</span></div>' +
             '<div class="ping-item"><span class="ping-label">CM</span><span class="ping-value" style="color:' + getPingColor(server.ping_cm) + '">' + (server.ping_cm === '0' ? 'TIMEOUT' : server.ping_cm + 'ms') + '</span></div>' +
             '<div class="ping-item"><span class="ping-label">BD</span><span class="ping-value" style="color:' + getPingColor(server.ping_bd) + '">' + (server.ping_bd === '0' ? 'TIMEOUT' : server.ping_bd + 'ms') + '</span></div>' +
           '</div>';
-          
-          html += '<a href="/?id=' + server.id + '" class="server-card" data-country="' + cCode + '">' +
+
+          html += '<a href="server.html?id=' + server.id + '" class="server-card" data-country="' + cCode + '">' +
             '<div class="server-card-header">' +
               '<div class="server-identity">' +
                 '<div class="status-indicator" style="background:' + statusColor + '; box-shadow: 0 0 8px ' + statusColor + ';"></div>' +
@@ -976,17 +529,17 @@ export async function handleDashboard(request, env, sys) {
             pingHtml +
           '</a>';
         }
-        
+
         html += '</div></div>';
       }
       return html;
     }
-    
+
     function renderTable(servers, now) {
       if (servers.length === 0) {
         return '<tr><td colspan="12" style="text-align:center; color:var(--text-muted);">[*] No data available</td></tr>';
       }
-      
+
       let html = '';
       for (const server of servers) {
         const lastUpdated = new Date(server.last_updated).getTime();
@@ -1000,12 +553,12 @@ export async function handleDashboard(request, env, sys) {
         const totalRx = formatBytes(server.net_rx);
         const totalTx = formatBytes(server.net_tx);
         const cCode = (server.country || 'xx').toLowerCase();
-        const flagHtml = cCode !== 'xx' 
-          ? '<img src="https://flagcdn.com/24x18/' + cCode + '.png" alt="' + cCode + '" style="vertical-align: middle; border-radius: 2px; filter: brightness(0.9);">' 
+        const flagHtml = cCode !== 'xx'
+          ? '<img src="https://flagcdn.com/24x18/' + cCode + '.png" alt="' + cCode + '" style="vertical-align: middle; border-radius: 2px; filter: brightness(0.9);">'
           : '🏳️';
         const updateSec = Math.round((now - lastUpdated) / 1000);
-        
-        html += '<tr onclick="window.location.href=\\\'/?id=' + server.id + '\\\'" style="cursor:pointer;" data-country="' + cCode + '">' +
+
+        html += '<tr onclick="window.location.href=\'server.html?id=' + server.id + '\'" style="cursor:pointer;" data-country="' + cCode + '">' +
           '<td style="text-align:center;"><div class="status-indicator" style="background:' + statusColor + '; display:inline-block; margin:0; width:8px; height:8px;"></div></td>' +
           '<td><b>' + server.name + '</b></td>' +
           '<td>' + flagHtml + ' ' + cCode.toUpperCase() + '</td>' +
@@ -1022,7 +575,7 @@ export async function handleDashboard(request, env, sys) {
       }
       return html;
     }
-    
+
     function renderStats(stats) {
       return '<div class="stat-item">' +
         '<div class="stat-label">Total Servers</div>' +
@@ -1063,19 +616,19 @@ export async function handleDashboard(request, env, sys) {
     function applyFilter() {
       const cards = document.querySelectorAll('.server-card');
       const rows = document.querySelectorAll('#ajax-table tr');
-      
+
       cards.forEach(card => {
         const country = card.dataset.country;
         card.style.display = (currentFilter === 'all' || country === currentFilter) ? '' : 'none';
       });
-      
+
       rows.forEach(row => {
         const country = row.dataset.country;
         if (country !== undefined) {
           row.style.display = (currentFilter === 'all' || country === currentFilter) ? '' : 'none';
         }
       });
-      
+
       document.querySelectorAll('.group-section').forEach(section => {
         const visibleCards = section.querySelectorAll('.server-card:not([style*="display: none"])');
         section.style.display = visibleCards.length === 0 ? 'none' : '';
@@ -1103,6 +656,7 @@ export async function handleDashboard(request, env, sys) {
     };
 
     let markersLayer, geoJsonLayer, worldGeoJson = null, currentMapDataStr = "";
+    let countryStats = {};
 
     async function initMap() {
       window.myMap = L.map('map-container', {
@@ -1111,9 +665,7 @@ export async function handleDashboard(request, env, sys) {
         minZoom: 1
       }).setView([30, 10], 2);
 
-      L.control.zoom({
-        position: 'bottomright'
-      }).addTo(window.myMap);
+      L.control.zoom({ position: 'bottomright' }).addTo(window.myMap);
 
       try {
         const res = await fetch('https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json');
@@ -1127,7 +679,7 @@ export async function handleDashboard(request, env, sys) {
     function drawMarkers() {
       if(!window.myMap || !worldGeoJson) return;
 
-      const newDataStr = document.getElementById('map-data').textContent;
+      const newDataStr = JSON.stringify(countryStats);
       if (currentMapDataStr === newDataStr) return;
       currentMapDataStr = newDataStr;
 
@@ -1135,11 +687,10 @@ export async function handleDashboard(request, env, sys) {
       if(markersLayer) markersLayer.clearLayers();
       else markersLayer = L.layerGroup().addTo(window.myMap);
 
-      const data = JSON.parse(newDataStr);
       const isDark = true;
 
       const activeIso3 = {};
-      for (const code in data) {
+      for (const code in countryStats) {
         if (iso2To3[code]) activeIso3[iso2To3[code]] = true;
       }
 
@@ -1156,18 +707,18 @@ export async function handleDashboard(request, env, sys) {
         }
       }).addTo(window.myMap);
 
-      for (const [code, count] of Object.entries(data)) {
+      for (const [code, count] of Object.entries(countryStats)) {
         if(countryCoords[code]) {
-          const icon = L.divIcon({ 
-            className: 'custom-map-marker', 
-            html: '<div style="background:#00d4aa; color:#000; border-radius:50%; width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:bold; border:2px solid #0a0e14; box-shadow:0 0 10px rgba(0,212,170,0.5); font-family:JetBrains Mono,monospace;">' + count + '</div>', 
-            iconSize: [22,22] 
+          const icon = L.divIcon({
+            className: 'custom-map-marker',
+            html: '<div style="background:#00d4aa; color:#000; border-radius:50%; width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:bold; border:2px solid #0a0e14; box-shadow:0 0 10px rgba(0,212,170,0.5); font-family:JetBrains Mono,monospace;">' + count + '</div>',
+            iconSize: [22,22]
           });
           L.marker(countryCoords[code], {icon: icon}).addTo(markersLayer);
         }
       }
     }
-    
+
     function bindFilterEvents() {
       document.querySelectorAll('.filter-tag').forEach(tag => {
         tag.addEventListener('click', function() {
@@ -1188,17 +739,33 @@ export async function handleDashboard(request, env, sys) {
 
     async function refreshData() {
       try {
-        const res = await fetch('/api/servers');
+        const res = await fetch(API_BASE + '/api/servers', {
+          headers: getAuthHeader()
+        });
         if (!res.ok) throw new Error('Failed to fetch');
         const data = await res.json();
         const now = Date.now();
-        
+
+        sysConfig = {
+          show_price: data.sysConfig?.show_price ?? true,
+          show_expire: data.sysConfig?.show_expire ?? true,
+          show_bw: data.sysConfig?.show_bw ?? true,
+          show_tf: data.sysConfig?.show_tf ?? true,
+          site_title: data.sysConfig?.site_title || 'Server Monitor',
+          admin_title: data.sysConfig?.admin_title || 'Admin'
+        };
+
+        document.getElementById('site-title').textContent = sysConfig.site_title;
+        document.getElementById('page-title').textContent = '$ ./' + sysConfig.site_title;
+        document.getElementById('admin-link').textContent = '⚙ ' + sysConfig.admin_title;
+
+        countryStats = data.countryStats || {};
+
         document.getElementById('ajax-stats').innerHTML = renderStats(data.stats);
         document.getElementById('ajax-cards').innerHTML = renderCards(data.servers, now);
         document.getElementById('ajax-table').innerHTML = renderTable(data.servers, now);
-        document.getElementById('ajax-filters').innerHTML = renderFilters(data.countryStats, data.stats.total);
-        document.getElementById('map-data').textContent = JSON.stringify(data.countryStats);
-        
+        document.getElementById('ajax-filters').innerHTML = renderFilters(countryStats, data.stats.total);
+
         bindFilterEvents();
         applyFilter();
         drawMarkers();
@@ -1209,13 +776,5 @@ export async function handleDashboard(request, env, sys) {
 
     setInterval(refreshData, 60000);
   </script>
-  ${sys.custom_script || ''}
 </body>
-</html>`;
-
-  return new Response(html, { 
-    headers: { 'Content-Type': 'text/html;charset=UTF-8' } 
-  });
-}
-
-export { handleServerDetail };
+</html>
