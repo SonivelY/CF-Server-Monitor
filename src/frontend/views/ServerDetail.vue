@@ -217,7 +217,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import TerminalHeader from '../components/TerminalHeader.vue'
 import Footer from '../components/Footer.vue'
-import { fetchServerDetail, fetchAllHistory, fetchAggHistory, formatBytes } from '../utils/api'
+import { fetchServerDetail, fetchAllHistory, fetchAggHistory, formatBytes, fetchConfig } from '../utils/api'
 import Chart from 'chart.js/auto'
 import 'chartjs-adapter-date-fns'
 import { t, currentLang } from '../utils/i18n'
@@ -239,16 +239,26 @@ const server = ref({})
 const currentHours = ref(1)
 const lastUpdateText = ref('just now')
 const oneHourDataCache = ref(null)
+const config = ref(null)
 
 const trans = computed(() => translations[currentLang.value] || translations.en)
 
-const timeOptions = [
-  { hours: 0.167, label: '10m' },
-  { hours: 1, label: '1h' },
-  { hours: 6, label: '6h' },
-  { hours: 12, label: '12h' },
-  { hours: 24, label: '24h' }
-]
+const timeOptions = computed(() => {
+  const allOptions = [
+    { hours: 0.167, label: '10m' },
+    { hours: 0.5, label: '30m' },
+    { hours: 1, label: '1h' },
+    { hours: 6, label: '6h' },
+    { hours: 12, label: '12h' },
+    { hours: 24, label: '24h' }
+  ]
+  
+  if (config.value && !config.value.enableLongRetention) {
+    return allOptions.filter(opt => opt.hours <= 1)
+  }
+  
+  return allOptions
+})
 
 const isOnline = computed(() => {
   const lastUpdated = new Date(server.value.last_updated).getTime()
@@ -702,6 +712,20 @@ const setTimeRange = (hours) => {
 let statusTimer = null
 
 const init = async () => {
+  // 首先加载配置
+  try {
+    const fetchedConfig = await fetchConfig()
+    if (fetchedConfig) {
+      config.value = fetchedConfig
+      // 如果启用了短数据保留，默认设置为 0.5 小时
+      if (!fetchedConfig.enableLongRetention) {
+        currentHours.value = 0.5
+      }
+    }
+  } catch (e) {
+    console.error('[ERROR] 加载配置失败:', e)
+  }
+
   // 确保所有 canvas 元素都已挂载
   await nextTick()
   await new Promise(resolve => setTimeout(resolve, 50))

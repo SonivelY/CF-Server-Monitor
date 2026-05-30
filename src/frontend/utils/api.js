@@ -119,3 +119,9 @@ export const login = async (username, password) => {
 export const logout = () => {
   localStorage.removeItem('admin_credentials')
 }
+
+export const fetchConfig = async () => {
+  const res = await fetch(`${API_BASE}/api/config`)
+  if (!res.ok) return null
+  return await res.json()
+}

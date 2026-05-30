@@ -1,5 +1,5 @@
 let dbInitialized = false;
-const DELETE_RAW_DATA = false; // 是否删除原始数据
+const DELETE_RAW_DATA = false; // 是否删除1天内的原始数据和中间聚合数据。超过1天的数据无论此设置如何都会被删除
 const RETENTION_DAYS = 1; // 数据保留天数（原始数据和聚合数据都保留此天数）
 
 export async function initDatabase(db) {
@@ -224,6 +224,9 @@ const COLUMN_MAP = {
 
 async function aggregateFromRaw(db, startTime, endTime, bucketSeconds, phaseName) {
   const bucketMs = bucketSeconds * 1000;
+  const now = Date.now();
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const oneDayAgo = now - oneDayMs;
   
   const rawCountResult = await db.prepare(`
     SELECT COUNT(*) as count FROM metrics_history
@@ -299,20 +302,28 @@ async function aggregateFromRaw(db, startTime, endTime, bucketSeconds, phaseName
       AND timestamp < ?
   `).bind(startTime, endTime).all();
   
-  const idsToDelete = [];
+  const idsToDeleteAlways = []; // 超过1天的，必须删除
+  const idsToDeleteOptional = []; // 1天内的，根据DELETE_RAW_DATA决定是否删除
+  
   for (const row of toDeleteResult.results) {
     const bucket = Math.floor((row.timestamp + bucketMs / 2) / bucketMs) * bucketMs;
     const key = `${row.server_id}_${bucket}`;
     if (existingKeys.has(key)) {
-      idsToDelete.push(row.id);
+      if (row.timestamp < oneDayAgo) {
+        idsToDeleteAlways.push(row.id);
+      } else {
+        idsToDeleteOptional.push(row.id);
+      }
     }
   }
   
   let deleted = 0;
-  if (DELETE_RAW_DATA && idsToDelete.length > 0) {
-    const batchSize = 500;
-    for (let i = 0; i < idsToDelete.length; i += batchSize) {
-      const batch = idsToDelete.slice(i, i + batchSize);
+  const batchSize = 500;
+  
+  // 处理必须删除的（超过1天）
+  if (idsToDeleteAlways.length > 0) {
+    for (let i = 0; i < idsToDeleteAlways.length; i += batchSize) {
+      const batch = idsToDeleteAlways.slice(i, i + batchSize);
       const placeholders = batch.map(() => '?').join(',');
       const deleteResult = await db.prepare(`
         DELETE FROM metrics_history WHERE id IN (${placeholders})
@@ -321,7 +332,20 @@ async function aggregateFromRaw(db, startTime, endTime, bucketSeconds, phaseName
     }
   }
   
-  const deleteStatus = DELETE_RAW_DATA ? `删除原始 ${deleted} 条` : `[测试模式] 跳过删除 (将删除 ${idsToDelete.length} 条)`;
+  // 处理可选删除的（1天内）
+  if (DELETE_RAW_DATA && idsToDeleteOptional.length > 0) {
+    for (let i = 0; i < idsToDeleteOptional.length; i += batchSize) {
+      const batch = idsToDeleteOptional.slice(i, i + batchSize);
+      const placeholders = batch.map(() => '?').join(',');
+      const deleteResult = await db.prepare(`
+        DELETE FROM metrics_history WHERE id IN (${placeholders})
+      `).bind(...batch).run();
+      deleted += deleteResult.meta.changes || 0;
+    }
+  }
+  
+  const totalToDelete = idsToDeleteAlways.length + idsToDeleteOptional.length;
+  const deleteStatus = `删除原始 ${deleted} 条（强制:${idsToDeleteAlways.length}, 可选:${DELETE_RAW_DATA ? idsToDeleteOptional.length : 0}/${idsToDeleteOptional.length}）`;
   console.log(`[Aggregate] ${phaseName}: 原始数据 ${rawCount} 条, 新增聚合 ${aggregated} 组, ${deleteStatus}`);
   
   return { aggregated, deleted, rawCount };
@@ -330,6 +354,9 @@ async function aggregateFromRaw(db, startTime, endTime, bucketSeconds, phaseName
 async function aggregateFromAggregated(db, startTime, endTime, targetBucketSeconds, sourceBucketSeconds, phaseName) {
   const sourceBucketMs = sourceBucketSeconds * 1000;
   const targetBucketMs = targetBucketSeconds * 1000;
+  const now = Date.now();
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const oneDayAgo = now - oneDayMs;
   
   const sourceCountResult = await db.prepare(`
     SELECT COUNT(*) as count FROM metrics_aggregated
@@ -405,20 +432,28 @@ async function aggregateFromAggregated(db, startTime, endTime, targetBucketSecon
       AND bucket < ?
   `).bind(sourceBucketSeconds, startTime, endTime).all();
   
-  const idsToDelete = [];
+  const idsToDeleteAlways = []; // 超过1天的，必须删除
+  const idsToDeleteOptional = []; // 1天内的，根据DELETE_RAW_DATA决定是否删除
+  
   for (const row of sourceToDeleteResult.results) {
     const targetBucket = Math.floor((row.bucket + targetBucketMs / 2) / targetBucketMs) * targetBucketMs;
     const key = `${row.server_id}_${targetBucket}`;
     if (existingTargetKeys.has(key)) {
-      idsToDelete.push(row.id);
+      if (row.bucket < oneDayAgo) {
+        idsToDeleteAlways.push(row.id);
+      } else {
+        idsToDeleteOptional.push(row.id);
+      }
     }
   }
   
   let deleted = 0;
-  if (DELETE_RAW_DATA && idsToDelete.length > 0) {
-    const batchSize = 500;
-    for (let i = 0; i < idsToDelete.length; i += batchSize) {
-      const batch = idsToDelete.slice(i, i + batchSize);
+  const batchSize = 500;
+  
+  // 处理必须删除的（超过1天）
+  if (idsToDeleteAlways.length > 0) {
+    for (let i = 0; i < idsToDeleteAlways.length; i += batchSize) {
+      const batch = idsToDeleteAlways.slice(i, i + batchSize);
       const placeholders = batch.map(() => '?').join(',');
       const deleteResult = await db.prepare(`
         DELETE FROM metrics_aggregated WHERE id IN (${placeholders})
@@ -427,7 +462,19 @@ async function aggregateFromAggregated(db, startTime, endTime, targetBucketSecon
     }
   }
   
-  const deleteStatus = DELETE_RAW_DATA ? `删除源聚合 ${deleted} 条` : `[测试模式] 跳过删除 (将删除 ${idsToDelete.length} 条)`;
+  // 处理可选删除的（1天内）
+  if (DELETE_RAW_DATA && idsToDeleteOptional.length > 0) {
+    for (let i = 0; i < idsToDeleteOptional.length; i += batchSize) {
+      const batch = idsToDeleteOptional.slice(i, i + batchSize);
+      const placeholders = batch.map(() => '?').join(',');
+      const deleteResult = await db.prepare(`
+        DELETE FROM metrics_aggregated WHERE id IN (${placeholders})
+      `).bind(...batch).run();
+      deleted += deleteResult.meta.changes || 0;
+    }
+  }
+  
+  const deleteStatus = `删除源聚合 ${deleted} 条（强制:${idsToDeleteAlways.length}, 可选:${DELETE_RAW_DATA ? idsToDeleteOptional.length : 0}/${idsToDeleteOptional.length}）`;
   console.log(`[Aggregate] ${phaseName}: 源聚合数据 ${sourceCount} 条, 新增聚合 ${aggregated} 组, ${deleteStatus}`);
   
   return { aggregated, deleted, rawCount: sourceCount };
@@ -600,12 +647,13 @@ export async function getAggregatedHistory(db, serverId, hours, columns) {
   return result;
 }
 
-export async function cleanupOldData(db, force = false) {
+export async function cleanupOldData(db, enableLongRetention = false, force = false) {
   try {
     const lastClean = await db.prepare(`SELECT value FROM settings WHERE key = 'last_cleanup'`).first();
     const now = Date.now();
     const oneHour = 60 * 60 * 1000;
-    const delDate = RETENTION_DAYS * 24 * 60 * 60 * 1000; // 删除N天前的原始数据
+    const retentionHours = enableLongRetention ? (RETENTION_DAYS * 24) : 1;
+    const delDate = retentionHours * 60 * 60 * 1000; // 根据配置删除N小时前的原始数据
     
     const shouldRun = force || !lastClean || (now - parseInt(lastClean.value)) > oneHour;
     

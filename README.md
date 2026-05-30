@@ -140,6 +140,7 @@ CF-Server-Monitor/
 | `API_USER_NAME`  | 自定义用户名（如 `admin`）         | 管理后台用户名           |
 | `API_SECRET`     | 自定义密码（如 `MyMonitor2024!`） | 探针认证密钥 & 管理后台密码   |
 | `D1_DATABASE_ID` | 第二步获取的 Database ID        | D1 数据库 ID         |
+| `LONG_RETENTION` | `true` 或 `false`（可选，默认 false） | 是否启用24小时长期数据保留 |
 
 ### 第五步：部署
 
@@ -382,6 +383,7 @@ V2.0 版本支持生成本地测试数据，方便在部署前进行功能测试
 | `D1_DATABASE_ID` | Cloudflare D1 数据库 ID                   | ✅  |
 | `CF_API_TOKEN`   | Cloudflare API Token（仅 GitHub Actions） | ✅  |
 | `CF_ACCOUNT_ID`  | Cloudflare 账户 ID（仅 GitHub Actions）     | ✅  |
+| `LONG_RETENTION` | 开启保留24小时，关闭仅保留1小时数据，默认关闭（true/false） | ❌  |
 
 ## ❓ 常见问题
 

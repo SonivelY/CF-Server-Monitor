@@ -8,13 +8,16 @@ import { checkAuth, authResponse, simpleAuthResponse } from './middleware/auth.j
 
 const historyCache = new Map();
 const CACHE_TTL = 60000;
-const MAX_HOURS = 72;
+const MAX_HOURS_LONG = 24;
+const MAX_HOURS_SHORT = 1;
 
 async function fetchHistoryData(env, request, id, hours, columns) {
   if (!id) return new Response('Missing ID', { status: 400 });
   
   const isLoggedIn = checkAuth(request, env);
   const sys = await loadSettings(env.DB);
+  const enableLongRetention = env.LONG_RETENTION === 'true';
+  const maxHours = enableLongRetention ? MAX_HOURS_LONG : MAX_HOURS_SHORT;
   
   // 如果关闭了公开访问，需要登录
   if (sys.is_public !== 'true' && !isLoggedIn) {
@@ -27,7 +30,7 @@ async function fetchHistoryData(env, request, id, hours, columns) {
   const server = await env.DB.prepare(query).bind(id).first();
   if (!server) return new Response('Not Found', { status: 404 });
   
-  const clampedHours = Math.min(hours, MAX_HOURS);
+  const clampedHours = Math.min(hours, maxHours);
   
   const cacheKey = `${id}_${clampedHours}_${columns}`;
   const cached = historyCache.get(cacheKey);
@@ -54,6 +57,8 @@ async function fetchAggregatedHistoryData(env, request, id, hours, columns) {
   
   const isLoggedIn = checkAuth(request, env);
   const sys = await loadSettings(env.DB);
+  const enableLongRetention = env.LONG_RETENTION === 'true';
+  const maxHours = enableLongRetention ? MAX_HOURS_LONG : MAX_HOURS_SHORT;
   
   // 如果关闭了公开访问，需要登录
   if (sys.is_public !== 'true' && !isLoggedIn) {
@@ -66,7 +71,7 @@ async function fetchAggregatedHistoryData(env, request, id, hours, columns) {
   const server = await env.DB.prepare(query).bind(id).first();
   if (!server) return new Response('Not Found', { status: 404 });
   
-  const clampedHours = Math.min(hours, MAX_HOURS);
+  const clampedHours = Math.min(hours, maxHours);
   
   const cacheKey = `agg_${id}_${clampedHours}_${columns}`;
   const cached = historyCache.get(cacheKey);
@@ -114,9 +119,17 @@ export default {
         return authResponse(sys.admin_title);
       }
       
-      const result = await cleanupOldData(env.DB, true);
+      const enableLongRetention = env.LONG_RETENTION === 'true';
+      const result = await cleanupOldData(env.DB, enableLongRetention, true);
       
       return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    async function handleGetConfig() {
+      const enableLongRetention = env.LONG_RETENTION === 'true';
+      return new Response(JSON.stringify({ enableLongRetention }), {
         headers: { 'Content-Type': 'application/json' }
       });
     }
@@ -136,6 +149,7 @@ export default {
         const sys = await loadSettings(env.DB);
         return handleServersAPI(request, env, sys);
       }},
+      { method: 'GET', path: '/api/config', handler: handleGetConfig },
       { method: 'GET', path: '/api/history', handler: async () => {
         const id = url.searchParams.get('id');
         const metric = url.searchParams.get('metric') || 'cpu';
@@ -170,7 +184,8 @@ export default {
     await initDatabase(env.DB);
     
     console.log('[Cron] 开始执行定时清理任务');
-    await cleanupOldData(env.DB);
+    const enableLongRetention = env.LONG_RETENTION === 'true';
+    await cleanupOldData(env.DB, enableLongRetention);
     console.log('[Cron] 定时清理任务完成');
   }
 };

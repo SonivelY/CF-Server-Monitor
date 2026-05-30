@@ -9,6 +9,6 @@ app.mount('#app').$nextTick(() => {
   if (loading) {
     setTimeout(() => {
       loading.remove()
-    }, 2000)
+    }, 1000)
   }
 })
