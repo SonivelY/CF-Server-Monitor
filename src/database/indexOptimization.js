@@ -1,5 +1,5 @@
 import { saveSiteOptions, debug, getSettingByKey } from '../utils/settings.js';
-import { getAllServers } from '../utils/cache.js';
+import { getAllServers, clearServersListCache } from '../utils/cache.js';
 
 export const HISTORY_PARTITION_MULTIPLIER = 10000000000000;
 export const HISTORY_AUTO_OPTIMIZED_MIN_ID = HISTORY_PARTITION_MULTIPLIER;
@@ -7,54 +7,69 @@ export const HISTORY_MAX_PARTITION_ID = 900;
 
 // 确保servers历史记录分区优化
 export async function ensureServerOptimization(db) {
-  // 检查是否已优化, 这里后续可以删除检查，包括下面的保存操作
+  // 检查是否已优化
   if (getSettingByKey(db, 'servers_optimized')) {
     debug('服务器历史记录分区已优化');
     return;
   }
 
-  // 新建history_partition_id timestamp字段
-  await db.prepare(
-    `ALTER TABLE servers ADD COLUMN history_partition_id INTEGER DEFAULT 0`
-  ).run();
-  await db.prepare(
-    `ALTER TABLE servers ADD COLUMN timestamp INTEGER DEFAULT 0`
-  ).run();
+  // 批量添加字段
+  await db.exec(`
+    ALTER TABLE servers ADD COLUMN history_partition_id INTEGER DEFAULT 0;
+    ALTER TABLE servers ADD COLUMN timestamp INTEGER DEFAULT 0;
+  `);
 
-  const { results: columns = [] } = await db.prepare(`PRAGMA table_info(servers)`).all();
-  const hasSortOrder = columns.some(column => column.name === 'sort_order');
-  const sortOrderSelect = hasSortOrder ? ', sort_order' : '';
-  const sortOrderSql = hasSortOrder ? 'sort_order ASC, ' : '';
-  const { results: servers = [] } = await db.prepare(`
-    SELECT id, history_partition_id AS history_partition_id${sortOrderSelect}
-    FROM servers
-    ORDER BY ${sortOrderSql}id ASC
-  `).all();
+  // 复用 getAllServers 获取所有服务器
+  const servers = await getAllServers(db, true); // includeHidden = true
+  
+  if (servers.length === 0) {
+    debug('没有服务器需要优化');
+    await saveSiteOptions(db, { servers_optimized: '1' });
+    return { success: true, assigned: 0 };
+  }
+
+  // 分配 partition_id
   const usedIds = new Set();
   const updates = [];
+  const cacheMap = new Map();
 
   for (const server of servers) {
     let partitionId = normalizeHistoryPartitionId(server.history_partition_id);
+    
     if (partitionId && !usedIds.has(partitionId)) {
       usedIds.add(partitionId);
-      serverHistoryPartitionCache.set(server.id, partitionId);
-      continue;
+    } else {
+      partitionId = nextAvailableHistoryPartitionId(usedIds);
+      usedIds.add(partitionId);
+      updates.push({ id: server.id, partitionId });
     }
-
-    partitionId = nextAvailableHistoryPartitionId(usedIds);
-    usedIds.add(partitionId);
-    updates.push({ serverId: server.id, partitionId });
-    serverHistoryPartitionCache.set(server.id, partitionId);
+    
+    cacheMap.set(server.id, partitionId);
   }
 
-  for (const update of updates) {
-    await db.prepare(
-      `UPDATE servers SET history_partition_id = ? WHERE id = ?`
-    ).bind(update.partitionId, update.serverId).run();
+  // 批量更新数据库
+  if (updates.length > 0) {
+    // 使用 CASE WHEN 一次性更新
+    const caseStatements = updates
+      .map(({ id, partitionId }) => `WHEN ${id} THEN ${partitionId}`)
+      .join(' ');
+    
+    const ids = updates.map(({ id }) => id).join(',');
+    
+    await db.exec(`
+      UPDATE servers 
+      SET history_partition_id = CASE id 
+        ${caseStatements}
+      END
+      WHERE id IN (${ids})
+    `);
   }
 
-  debug('服务器历史记录分区优化完成');
+  // 清空服务器列表的缓存
+  clearServersListCache();
 
+  debug(`服务器历史记录分区优化完成，更新了 ${updates.length} 条记录`);
+  
   // 标记为已优化
   await saveSiteOptions(db, { servers_optimized: '1' });
 
