@@ -36,6 +36,25 @@
             </textarea>
           </div>
         </div>
+
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label class="form-label">{{ trans.cspStatic }}</label>
+            <input type="text" v-model="settings.csp_static" class="form-input" placeholder="https://unpkg.com,https://cdn.jsdelivr.net">
+            <p class="text-muted text-sm mt-1">{{ trans.cspStaticTip }}</p>
+          </div>
+
+          <div class="form-group flex-1">
+            <label class="form-label">{{ trans.cspApi }}</label>
+            <input type="text" v-model="settings.csp_api" class="form-input" placeholder="https://api.example.com">
+            <p class="text-muted text-sm mt-1">{{ trans.cspApiTip }}</p>
+          </div>
+        </div>
+
+        <p class="text-muted text-sm mt-2">
+          <span class="warning-icon">[i]</span>
+          {{ trans.cspWarning }}
+        </p>
       </div>
 
       <div class="settings-section">

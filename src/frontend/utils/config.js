@@ -1,7 +1,5 @@
 let apiBases = []
 let wsBase = null
-let title = ''
-let backgroundImage = ''
 
 const stripTrailingSlash = (s) => String(s || '').replace(/\/+$/, '')
 
@@ -27,26 +25,16 @@ const setApiBases = (values) => {
 
 export const initConfig = async () => {
   setApiBases([window.location.origin])
-  try {
-    const res = await fetch(`./config.json?t=${Date.now()}`, {
-      cache: 'no-cache',
-      credentials: 'omit'
-    })
-    if (res && res.ok) {
-      const data = await res.json()
-      if (data && Array.isArray(data.apiBase)) {
-        setApiBases(data.apiBase.filter(u => typeof u === 'string' && u.trim()))
-      }
-      if (data && typeof data.title === 'string') {
-        title = data.title.trim()
-      }
-      if (data && typeof data.backgroundImage === 'string') {
-        backgroundImage = data.backgroundImage.trim()
-      }
+
+  // 从 meta 标签读取 apiBase
+  const metaApiBase = document.querySelector('meta[name="apiBase"]')?.content
+  if (metaApiBase) {
+    const bases = metaApiBase.split(',').map(s => s.trim()).filter(Boolean)
+    if (bases.length > 0) {
+      setApiBases(bases)
     }
-  } catch (e) {
-    // Network or parse failure -> keep the current-origin fallback
   }
+
   return apiBases
 }
 
@@ -66,12 +54,8 @@ export const hasMultipleApiBases = () => {
   return getApiBases().length > 1
 }
 
-export const getTitle = () => {
-  return title
-}
-
-export const getBackgroundImage = () => {
-  return backgroundImage
-}
+// title 和背景图已在构建时注入 HTML，此处保留空实现以兼容 api.js
+export const getTitle = () => ''
+export const getBackgroundImage = () => ''
 
 export default { initConfig, getApiBases, getWsBase, hasMultipleApiBases, getTitle, getBackgroundImage }

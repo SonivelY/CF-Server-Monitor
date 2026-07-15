@@ -32,7 +32,7 @@
         <div class="host-name">
           <span class="prompt">root@</span>
           <span v-if="server.region && server.region !== 'xx'">
-          <img :src="'https://flagcdn.com/24x18/' + getFlagRegionCode(server.region) + '.png'" :alt="server.region" class="flag-img" style="margin-right:6px;">
+          <img :src="'/flags/' + getFlagRegionCode(server.region) + '.svg'" :alt="server.region" class="flag-img" style="margin-right:6px;">
         </span>
           <span v-else>🏳️</span>
           <span>{{ server.name || 'Loading...' }}</span>

@@ -4,7 +4,7 @@
       <div class="server-identity">
         <div class="status-indicator" :style="{ background: statusColor, boxShadow: '0 0 8px ' + statusColor }"></div>
         <span v-if="regionCode !== 'xx'">
-          <img :src="'https://flagcdn.com/24x18/' + regionCode + '.png'" :alt="regionCode" style="vertical-align: middle; margin-right: 5px; border-radius: 2px; filter: brightness(0.9);">
+          <img :src="'/flags/' + regionCode + '.svg'" :alt="regionCode" style="vertical-align: middle; margin-right: 5px; border-radius: 2px; filter: brightness(0.9);">
         </span>
         <span v-else>🏳️</span>
         <span class="server-name">{{ server.name }}</span>

@@ -5,7 +5,7 @@ import './styles/main.css'
 import './styles/light.css'
 import { currentLang, translations } from './utils/i18n'
 import { http } from './utils/http'
-import { initConfig, getTitle, getBackgroundImage, hasMultipleApiBases } from './utils/config'
+import { initConfig, hasMultipleApiBases } from './utils/config'
 import { VERSION } from './utils/api'
 import {
   clearTurnstileToken,
@@ -44,6 +44,8 @@ async function fetchConfig() {
     const isPublic = data.is_public !== false
     const authorization = data.authorization === true
     const siteTitle = data.site_title || ''
+    const cspStatic = data.csp_static || ''
+    const cspApi = data.csp_api || ''
 
     if (version) {
       VERSION.value = version
@@ -57,7 +59,9 @@ async function fetchConfig() {
       verified,
       is_public: isPublic,
       authorization,
-      site_title: siteTitle
+      site_title: siteTitle,
+      csp_static: cspStatic,
+      csp_api: cspApi
     }
   } catch (e) {
     console.error('Failed to fetch config:', e)
@@ -168,25 +172,54 @@ const renderStartupTurnstile = async (siteKey, apiIndex) => {
   }
 }
 
+function applyCspMeta(cspStatic, cspApi) {
+  const turnstileDomain = 'https://challenges.cloudflare.com'
+  const staticDomains = (cspStatic || '').split(',').map(s => s.trim()).filter(Boolean)
+  const apiDomains = (cspApi || '').split(',').map(s => s.trim()).filter(Boolean)
+
+  // 如果没有配置任何域名，则不更新 CSP（保留构建时的配置）
+  if (staticDomains.length === 0 && apiDomains.length === 0) {
+    return
+  }
+
+  // 从现有 CSP 中提取已有的域名
+  const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]')
+  const existingCsp = meta?.content || ''
+  const domainRegex = /https?:\/\/[^\s';]+/g
+  const existingDomains = existingCsp.match(domainRegex) || []
+
+  // 合并：默认白名单 + API 配置
+  const newDomains = [turnstileDomain, ...staticDomains, ...apiDomains]
+  const mergedDomains = [...new Set([...existingDomains, ...newDomains])].join(' ')
+
+  const csp = [
+    `default-src 'self'`,
+    `script-src 'self' ${mergedDomains}`,
+    `style-src 'self' 'unsafe-inline' ${mergedDomains}`,
+    `img-src 'self' ${mergedDomains} data:`,
+    `font-src 'self' ${mergedDomains}`,
+    `connect-src 'self' ${mergedDomains}`,
+    `frame-src ${turnstileDomain}`,
+    `form-action 'self'`,
+    `object-src 'none'`,
+    `base-uri 'self'`,
+    `frame-ancestors 'none'`
+  ].join(';')
+
+  if (meta) {
+    meta.content = csp
+  } else {
+    const newMeta = document.createElement('meta')
+    newMeta.httpEquiv = 'Content-Security-Policy'
+    newMeta.content = csp
+    document.head.appendChild(newMeta)
+  }
+}
+
 async function initApp() {
   // Load frontend runtime config (apiBase) first so all subsequent
   // HTTP / WebSocket requests go through the configured origin.
   await initConfig()
-
-  const appTitle = getTitle()
-  const bgImage = getBackgroundImage()
-
-  if (appTitle) {
-    document.title = appTitle
-  }
-
-  if (bgImage) {
-    document.body.style.backgroundImage = `url(${bgImage})`
-    document.body.style.backgroundSize = 'cover'
-    document.body.style.backgroundPosition = 'center'
-    document.body.style.backgroundRepeat = 'no-repeat'
-    document.body.style.backgroundAttachment = 'fixed'
-  }
 
   const isMultipleMode = hasMultipleApiBases()
   const currentHash = window.location.hash
@@ -214,8 +247,10 @@ async function initApp() {
         verified: sharedTurnstileSite ? enabledTurnstileSites.every(site => site.verified) : first.data.verified === true,
         is_public: !privateAccess.hasPrivateSite,
         authorization: !privateAccess.hasUnauthorizedPrivateSite,
-        site_title: getTitle() || first.data.site_title || ''
-      } : { turnstile_enabled: false, turnstile_login_enabled: false, turnstile_site_key: '', turnstile_api_index: 0, version: '', verified: false, is_public: true, authorization: false, site_title: getTitle() || '' }
+        site_title: first.data.site_title || '',
+        csp_static: first.data.csp_static || '',
+        csp_api: first.data.csp_api || ''
+      } : { turnstile_enabled: false, turnstile_login_enabled: false, turnstile_site_key: '', turnstile_api_index: 0, version: '', verified: false, is_public: true, authorization: false, site_title: '', csp_static: '', csp_api: '' }
       if (sharedTurnstileSite) {
         config.turnstile_enabled = true
         config.turnstile_site_key = sharedTurnstileSite.siteKey
@@ -223,10 +258,15 @@ async function initApp() {
       }
       if (config.version) VERSION.value = config.version
     } catch (_) {
-      config = { turnstile_enabled: false, turnstile_login_enabled: false, turnstile_site_key: '', turnstile_api_index: 0, version: '', verified: false, is_public: true, authorization: false }
+      config = { turnstile_enabled: false, turnstile_login_enabled: false, turnstile_site_key: '', turnstile_api_index: 0, version: '', verified: false, is_public: true, authorization: false, csp_static: '', csp_api: '' }
     }
   } else {
     config = await fetchConfig()
+  }
+
+  // 应用 CSP 设置 (API settings) - 仅当有配置时才覆盖默认 CSP
+  if (config.csp_static || config.csp_api) {
+    applyCspMeta(config.csp_static, config.csp_api)
   }
 
   // 仅全局模式需要在启动时验证 Turnstile；登录模式在 Admin 页面的登录表单中验证

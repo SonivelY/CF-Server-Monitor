@@ -56,7 +56,7 @@
             <td>
               <div class="server-info">
                 <span v-if="server.region && server.region !== 'xx'">
-                  <img :src="'https://flagcdn.com/24x18/' + getFlagRegionCode(server.region) + '.png'" :alt="server.region" class="flag-img">
+                  <img :src="'/flags/' + getFlagRegionCode(server.region) + '.svg'" :alt="server.region" class="flag-img">
                 </span>
                 <span v-else>🏳️</span>
                 <router-link :to="'/server/' + server.id + (selectedApiIndex ? '?apiIndex=' + selectedApiIndex : '')" class="server-name-link">{{ server.name }}</router-link>

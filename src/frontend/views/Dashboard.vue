@@ -41,7 +41,7 @@
           @click="setFilter(code)"
         >
           <span v-if="code === 'unknown'" class="filter-tag-icon">🏳️</span>
-          <img v-else-if="code !== 'all'" :src="'https://flagcdn.com/16x12/' + getFlagRegionCode(code) + '.png'" :alt="code">
+          <img v-else-if="code !== 'all'" :src="'/flags/' + getFlagRegionCode(code) + '.svg'" :alt="code">
           {{ code === 'all' ? '[' + trans.all + ']' : code === 'unknown' ? 'UNKNOWN' : code.toUpperCase() }} {{ count }}
         </span>
       </div>
@@ -131,7 +131,7 @@
               <td><b>{{ server.name }}</b></td>
               <td>
                 <span v-if="server.region && server.region !== 'xx'">
-                  <img :src="'https://flagcdn.com/24x18/' + getFlagRegionCode(server.region) + '.png'" :alt="server.region" class="flag-img">
+                  <img :src="'/flags/' + getFlagRegionCode(server.region) + '.svg'" :alt="server.region" class="flag-img">
                 </span>
                 <span v-else>🏳️</span>
                 {{ (server.region || 'XX').toUpperCase() }}
