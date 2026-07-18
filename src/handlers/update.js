@@ -6,7 +6,6 @@ import { ensureServerOptimization } from '../database/indexOptimization.js';
 import { loadSiteSettings } from '../utils/settings.js';
 import { getRemoteVersion } from '../utils/version.js';
 import {
-  AGENT_AUTO_UPDATE_HEADER,
   AGENT_CONFIG_MD5_HEADER,
   AGENT_CONFIG_SCHEMA_HEADER,
   AGENT_CONFIG_SCHEMA_VERSION,
@@ -54,13 +53,12 @@ function normalizeAgentVersion(value) {
     .slice(0, 64);
 }
 
-function createAgentInstructionResponse(body, headers = {}) {
+function createAgentInstructionResponse(body) {
   return new Response(body, {
     status: 200,
     headers: {
       'Cache-Control': 'no-store',
-      'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-      ...headers
+      'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'
     }
   });
 }
@@ -249,12 +247,12 @@ export async function handleUpdate(request, env, ctx) {
     ctx.waitUntil(_ensureBatchFlush(env));
 
     let shouldUpdateAgent = false;
-    const autoUpdateRequested = isAgentAutoUpdateEnabled(request.headers.get(AGENT_AUTO_UPDATE_HEADER)) &&
-      isAgentAutoUpdateEnabled(serverDetail.auto_update);
+    const autoUpdateRequested = isAgentAutoUpdateEnabled(serverDetail.auto_update) && !!agentVersion;
     if (autoUpdateRequested) {
       try {
         const remoteVersion = await getRemoteVersion();
-        shouldUpdateAgent = shouldSendAgentUpdate(agentVersion, remoteVersion?.agent || '');
+        const targetAgentVersion = normalizeAgentVersion(remoteVersion?.agent || '');
+        shouldUpdateAgent = shouldSendAgentUpdate(agentVersion, targetAgentVersion);
       } catch (versionError) {
         console.warn('[Update] Failed to check agent version:', versionError?.message || versionError);
       }
@@ -283,7 +281,10 @@ export async function handleUpdate(request, env, ctx) {
         [AGENT_CONFIG_MD5_HEADER]: descriptor.md5
       };
 
-      if (!md5Changed && !hasCorrection && !shouldUpdateAgent) {
+      if (!md5Changed && !hasCorrection) {
+        if (shouldUpdateAgent) {
+          return createAgentInstructionResponse('update=1');
+        }
         return new Response(null, { status: 204, headers: responseHeaders });
       }
 

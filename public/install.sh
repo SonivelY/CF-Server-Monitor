@@ -62,6 +62,7 @@ print_usage() {
     echo "  -cm=HOST       自定义CM测试节点"
     echo "  -bd=HOST       自定义BD测试节点"
     echo "  -reset_day=N   流量重置日(1-31, 0=不重置)，默认1"
+    echo "  -auto_update=0|1 自动更新探针，默认0"
     echo "  -rx_correction=N  下行流量校正(GB)，覆盖当月下行数据"
     echo "  -tx_correction=N  上行流量校正(GB)，覆盖当月上行数据"
     echo "  -debug=1       输出上报调试日志，默认0"
@@ -76,10 +77,12 @@ print_usage() {
     exit 1
 }
 
-normalize_debug_mode() {
-    case "${1:-0}" in
-        1|true|TRUE|yes|YES|on|ON) echo "1" ;;
-        *) echo "0" ;;
+normalize_binary_value() {
+    local value="${1-}" default_value="${2-}"
+    [ -z "$value" ] && value="$default_value"
+    case "$value" in
+        0|1) printf '%s' "$value" ;;
+        *) return 1 ;;
     esac
 }
 
@@ -201,6 +204,7 @@ create_script() {
 set +eu
 
 AGENT_VERSION="__AGENT_VERSION__"
+SERVICE_NAME="cf-probe"
 CONFIG_DIR="/etc/config/cf-probe"
 CONFIG_FILE="${CONFIG_DIR}/config.conf"
 TRAFFIC_DATA_FILE="${CONFIG_DIR}/traffic.dat"
@@ -223,6 +227,7 @@ while IFS='=' read -r key value; do
         CM_NODE) CM_NODE="${value%\"}"; CM_NODE="${CM_NODE#\"}" ;;
         BD_NODE) BD_NODE="${value%\"}"; BD_NODE="${BD_NODE#\"}" ;;
         RESET_DAY) RESET_DAY="${value%\"}"; RESET_DAY="${RESET_DAY#\"}" ;;
+        AUTO_UPDATE) AUTO_UPDATE="${value%\"}"; AUTO_UPDATE="${AUTO_UPDATE#\"}" ;;
         DEBUG_MODE) DEBUG_MODE="${value%\"}"; DEBUG_MODE="${DEBUG_MODE#\"}" ;;
         CONFIG_MD5) CONFIG_MD5="${value%\"}"; CONFIG_MD5="${CONFIG_MD5#\"}" ;;
     esac
@@ -230,9 +235,14 @@ done < "${CONFIG_FILE}"
 
 COLLECT_INTERVAL=${COLLECT_INTERVAL:-0}
 REPORT_INTERVAL=${REPORT_INTERVAL:-60}
+AUTO_UPDATE=${AUTO_UPDATE:-0}
 DEBUG_MODE=${DEBUG_MODE:-0}
+case "$AUTO_UPDATE" in
+    0|1) ;;
+    *) AUTO_UPDATE=0 ;;
+esac
 case "$DEBUG_MODE" in
-    1|true|TRUE|yes|YES|on|ON) DEBUG_MODE=1 ;;
+    0|1) ;;
     *) DEBUG_MODE=0 ;;
 esac
 [ -z "$RESET_DAY" ] && RESET_DAY=1
@@ -287,6 +297,69 @@ rotate_log_if_needed() {
     rm -f "$_tmp" 2>/dev/null || true
 }
 
+get_install_url() {
+    local url rest origin
+    url="${WORKER_URL%%\?*}"
+    case "$url" in
+        http://*)
+            rest="${url#http://}"
+            origin="http://${rest%%/*}"
+            ;;
+        https://*)
+            rest="${url#https://}"
+            origin="https://${rest%%/*}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    case "$origin" in
+        http://|https://) return 1 ;;
+    esac
+    printf '%s/install.sh' "$origin"
+}
+
+schedule_agent_update() {
+    [ "${AUTO_UPDATE:-0}" = "1" ] || return 0
+
+    local now last lock_file install_url
+    lock_file="${CONFIG_DIR}/auto_update.lock"
+
+    now=$(date +%s)
+    if [ -f "$lock_file" ]; then
+        last=$(cat "$lock_file" 2>/dev/null || echo 0)
+        case "$last" in ''|*[!0-9]*) last=0 ;; esac
+        if [ $((now - last)) -lt 1800 ]; then
+            log_warn_debug "Auto update already scheduled recently"
+            return 0
+        fi
+    fi
+
+    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
+    if ! install_url=$(get_install_url); then
+        log_warn_debug "Auto update skipped: invalid WORKER_URL=${WORKER_URL}"
+        return 1
+    fi
+
+    if [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1; then
+        if systemd-run --unit="${SERVICE_NAME}-auto-update-${now}" /bin/bash -c 'set -o pipefail; curl -fsSL --connect-timeout 5 -m 30 "$1" | bash -s install' _ "$install_url" >/dev/null 2>&1; then
+            printf '%s\n' "$now" > "$lock_file" 2>/dev/null || true
+            log_info "Auto update scheduled via systemd-run"
+            return 0
+        fi
+    fi
+
+    if [ -d /run/systemd/system ]; then
+        log_warn_debug "Auto update scheduling failed: systemd-run unavailable"
+        return 1
+    fi
+
+    nohup /bin/bash -c 'set -o pipefail; curl -fsSL --connect-timeout 5 -m 30 "$1" | bash -s install' _ "$install_url" >/dev/null 2>&1 &
+    printf '%s\n' "$now" > "$lock_file" 2>/dev/null || true
+    log_info "Auto update scheduled"
+    return 0
+}
+
 persist_dynamic_config() {
     local tmp_file="${CONFIG_FILE}.tmp.$$"
     awk \
@@ -326,19 +399,16 @@ persist_dynamic_config() {
 apply_remote_config() {
     local response_file="$1" header_file="$2" body bytes new_md5
     local new_collect new_report new_reset new_schema new_ct new_cu new_cm new_bd
-    local new_rx_corr new_tx_corr
+    local new_rx_corr new_tx_corr new_update has_config
 
     bytes=$(wc -c < "$response_file" 2>/dev/null || echo 9999)
     [ "$bytes" -le 1024 ] || return 1
     body=$(cat "$response_file" 2>/dev/null) || return 1
     case "$body" in ''|*[!a-z0-9_=\&.\-:]*) return 1 ;; esac
 
-    new_md5=$(awk 'tolower($1)=="x-agent-config-md5:" { gsub("\r", "", $2); print tolower($2); exit }' "$header_file")
-    [ "${#new_md5}" -eq 32 ] || return 1
-    case "$new_md5" in *[!0-9a-f]*) return 1 ;; esac
-
     new_rx_corr=""
     new_tx_corr=""
+    new_update=""
     IFS='&' read -ra _fields <<< "$body"
     for _f in "${_fields[@]}"; do
         _k="${_f%%=*}"; _v="${_f#*=}"
@@ -353,12 +423,33 @@ apply_remote_config() {
             custom_bd)        new_bd="$_v" ;;
             rx_correction)    new_rx_corr="$_v" ;;
             tx_correction)    new_tx_corr="$_v" ;;
+            update)           new_update="$_v" ;;
+            '')               ;;
+            *)                return 1 ;;
         esac
     done
+
+    has_config=0
+    if [ -n "${new_collect:-}" ] || [ -n "${new_report:-}" ] || [ -n "${new_reset:-}" ] || [ -n "${new_schema:-}" ]; then
+        has_config=1
+    fi
+
+    if [ "$has_config" = "0" ]; then
+        if [ "$new_update" = "1" ]; then
+            schedule_agent_update
+            return 0
+        fi
+        return 1
+    fi
+
+    new_md5=$(awk 'tolower($1)=="x-agent-config-md5:" { gsub("\r", "", $2); print tolower($2); exit }' "$header_file")
+    [ "${#new_md5}" -eq 32 ] || return 1
+    case "$new_md5" in *[!0-9a-f]*) return 1 ;; esac
 
     case "$new_collect" in 0|1|2|5|10) ;; *) return 1 ;; esac
     case "$new_report" in 30|60|120|180) ;; *) return 1 ;; esac
     case "$new_reset" in 0|[1-9]|1[0-9]|2[0-9]|30|31) ;; *) return 1 ;; esac
+    case "$new_update" in ''|0|1) ;; *) return 1 ;; esac
     [ "$new_schema" = "2" ] || return 1
     [ "$new_report" -ge "$new_collect" ] || return 1
 
@@ -397,6 +488,11 @@ apply_remote_config() {
             send_correction_confirm "$new_rx_corr" "$new_tx_corr" || true
         fi
     fi
+
+    if [ "$new_update" = "1" ]; then
+        schedule_agent_update || true
+    fi
+    return 0
 }
 
 normalize_correction_value() {
@@ -856,7 +952,7 @@ if [ -z "${SERVER_ID:-}" ] || [ -z "${SECRET:-}" ] || [ -z "${WORKER_URL:-}" ]; 
 fi
 
 log_info "CF-Server-Monitor Probe Engine Started Successfully."
-log_debug "Config: id=${SERVER_ID} url=${WORKER_URL} report_interval=${REPORT_INTERVAL}s collect_interval=${COLLECT_INTERVAL}s active_interval=${ACTIVE_INTERVAL}s reset_day=${RESET_DAY} secret_len=${#SECRET}"
+log_debug "Config: id=${SERVER_ID} url=${WORKER_URL} report_interval=${REPORT_INTERVAL}s collect_interval=${COLLECT_INTERVAL}s active_interval=${ACTIVE_INTERVAL}s reset_day=${RESET_DAY} auto_update=${AUTO_UPDATE} secret_len=${#SECRET}"
 log_debug "Nodes: ct=${CT_NODE:-} cu=${CU_NODE:-} cm=${CM_NODE:-} bd=${BD_NODE:-}"
 
 # 核心架构升级：在这里脱离主循环，静默启动常驻网络 Worker 协程，无 wait 干扰
@@ -1171,6 +1267,7 @@ install_probe() {
     CM_NODE=""
     BD_NODE=""
     RESET_DAY=""
+    AUTO_UPDATE=""
     RX_CORRECTION=""
     TX_CORRECTION=""
     DEBUG_MODE=""
@@ -1188,9 +1285,10 @@ install_probe() {
             -cm=*) CM_NODE="${arg#-cm=}" ;;
             -bd=*) BD_NODE="${arg#-bd=}" ;;
             -reset_day=*) RESET_DAY="${arg#-reset_day=}" ;;
+            -auto_update=*|-auto-update=*) AUTO_UPDATE=$(normalize_binary_value "${arg#*=}") || error "auto_update 参数非法，仅支持 0 或 1" ;;
             -rx_correction=*) RX_CORRECTION="${arg#-rx_correction=}" ;;
             -tx_correction=*) TX_CORRECTION="${arg#-tx_correction=}" ;;
-            -debug=*) DEBUG_MODE="${arg#-debug=}" ;;
+            -debug=*) DEBUG_MODE=$(normalize_binary_value "${arg#-debug=}") || error "debug 参数非法，仅支持 0 或 1" ;;
         esac
     done
 
@@ -1208,7 +1306,8 @@ install_probe() {
             COLLECT_INTERVAL=${COLLECT_INTERVAL:-0}
             REPORT_INTERVAL=${REPORT_INTERVAL:-60}
             [ -z "$RESET_DAY" ] && RESET_DAY=1
-            DEBUG_MODE=$(normalize_debug_mode "${DEBUG_MODE:-0}")
+            AUTO_UPDATE=$(normalize_binary_value "$AUTO_UPDATE" 0) || error "auto_update 参数非法，仅支持 0 或 1"
+            DEBUG_MODE=$(normalize_binary_value "$DEBUG_MODE" 0) || error "debug 参数非法，仅支持 0 或 1"
 
             step "更新配置文件..."
             cat > "${CONFIG_FILE}" << EOF
@@ -1222,6 +1321,7 @@ CU_NODE="${CU_NODE:-}"
 CM_NODE="${CM_NODE:-}"
 BD_NODE="${BD_NODE:-}"
 RESET_DAY="${RESET_DAY}"
+AUTO_UPDATE="${AUTO_UPDATE}"
 CONFIG_MD5="none"
 EOF
             chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
@@ -1240,6 +1340,7 @@ EOF
                     CM_NODE) CM_NODE="${value%\"}"; CM_NODE="${CM_NODE#\"}" ;;
                     BD_NODE) BD_NODE="${value%\"}"; BD_NODE="${BD_NODE#\"}" ;;
                     RESET_DAY) RESET_DAY="${value%\"}"; RESET_DAY="${RESET_DAY#\"}" ;;
+                    AUTO_UPDATE) AUTO_UPDATE="${value%\"}"; AUTO_UPDATE="${AUTO_UPDATE#\"}" ;;
                     CONFIG_MD5) CONFIG_MD5="${value%\"}"; CONFIG_MD5="${CONFIG_MD5#\"}" ;;
                 esac
             done < "${CONFIG_FILE}"
@@ -1252,7 +1353,8 @@ EOF
         COLLECT_INTERVAL=${COLLECT_INTERVAL:-0}
         REPORT_INTERVAL=${REPORT_INTERVAL:-60}
         [ -z "$RESET_DAY" ] && RESET_DAY=1
-        DEBUG_MODE=$(normalize_debug_mode "${DEBUG_MODE:-0}")
+        AUTO_UPDATE=$(normalize_binary_value "$AUTO_UPDATE" 0) || error "auto_update 参数非法，仅支持 0 或 1"
+        DEBUG_MODE=$(normalize_binary_value "$DEBUG_MODE" 0) || error "debug 参数非法，仅支持 0 或 1"
 
         step "创建配置目录..."
         mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
@@ -1279,6 +1381,7 @@ CU_NODE="${CU_NODE:-}"
 CM_NODE="${CM_NODE:-}"
 BD_NODE="${BD_NODE:-}"
 RESET_DAY="${RESET_DAY}"
+AUTO_UPDATE="${AUTO_UPDATE}"
 CONFIG_MD5="none"
 EOF
         chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
@@ -1287,7 +1390,8 @@ EOF
 
     COLLECT_INTERVAL=${COLLECT_INTERVAL:-0}
     REPORT_INTERVAL=${REPORT_INTERVAL:-60}
-    DEBUG_MODE=$(normalize_debug_mode "${DEBUG_MODE:-0}")
+    AUTO_UPDATE=$(normalize_binary_value "$AUTO_UPDATE" 0) || error "auto_update 参数非法，仅支持 0 或 1"
+    DEBUG_MODE=$(normalize_binary_value "$DEBUG_MODE" 0) || error "debug 参数非法，仅支持 0 或 1"
     CONFIG_MD5=${CONFIG_MD5:-none}
 
     if [ -n "${RX_CORRECTION}" ] || [ -n "${TX_CORRECTION}" ]; then
@@ -1328,6 +1432,7 @@ EOF
     echo -e "    ● Worker URL  : ${WORKER_URL}"
     echo -e "    ● 上报间隔    : ${REPORT_INTERVAL}秒"
     printf  '    ● 采样间隔    : %s秒\n' "${COLLECT_INTERVAL}"
+    echo -e "    ● 自动更新    : ${AUTO_UPDATE}"
     echo -e "    ● 调试日志    : ${DEBUG_MODE}"
     [ -n "${RX_CORRECTION}" ] && echo -e "    ● 下行校正    : ${RX_CORRECTION}GB"
     [ -n "${TX_CORRECTION}" ] && echo -e "    ● 上行校正    : ${TX_CORRECTION}GB"

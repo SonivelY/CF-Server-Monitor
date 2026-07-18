@@ -3,7 +3,6 @@ import { md5Hash } from './common.js';
 export const AGENT_CONFIG_SCHEMA_VERSION = 2;
 export const AGENT_CONFIG_SCHEMA_HEADER = 'X-Agent-Config-Schema';
 export const AGENT_CONFIG_MD5_HEADER = 'X-Agent-Config-Md5';
-export const AGENT_AUTO_UPDATE_HEADER = 'X-Agent-AutoUpdate';
 export const MAX_TRAFFIC_CORRECTION_GB = 1000000;
 
 const ALLOWED_COLLECT_INTERVALS = new Set([0, 1, 2, 5, 10]);

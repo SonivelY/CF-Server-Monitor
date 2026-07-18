@@ -40,6 +40,10 @@ assert.equal(descriptor.serialized, expected);
 assert.equal(descriptor.md5, createHash('md5').update(expected).digest('hex'));
 assert.equal(descriptor.correction, null);
 
+const autoUpdateDescriptor = await describeAgentConfig({ ...server, auto_update: '1' });
+assert.equal(autoUpdateDescriptor.serialized, expected);
+assert.equal(autoUpdateDescriptor.md5, descriptor.md5);
+
 const correctionDescriptor = await describeAgentConfig({ ...server, rx_correction: null, tx_correction: 5 });
 assert.deepEqual(correctionDescriptor.correction, {
   rx_correction: 0,
